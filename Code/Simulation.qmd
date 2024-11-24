@@ -17,16 +17,15 @@ require(parallel)
 # Generate negative binomial data.
 # PARAMS:
 # n: Number of observations we want
-# m: Number of coefficients we want
+# p: Number of coefficients we want (p>n)
 # rho: A number between 0 and 1 that indicates sparsity (proportion of non-zero coeffs)
 
-generate.data.negbin<-function(n, m, rho, beta){
+generate.data.negbin<-function(n, p, rho, beta){
   
   # Calculate Sigma matrix
   s<-floor(n^0.8)
-  p<-length(beta)
   w<-(1:p-s)^{-4}
-  W<-sum(w[(s+1):length(w)], na.rm=T)
+  W<-sum(w[(s+1):length(w)])
   diag.vec<-rep(1, p) # Start as a vector, easier to use logic with
   diag.vec[1:s]<-((n-s)*w/W)[1:s]
   D<-diag(diag.vec, nrow=p)
@@ -34,8 +33,8 @@ generate.data.negbin<-function(n, m, rho, beta){
   Sigma<-O%*%D%*%t(O)
   
   # Generate z
-  z1<-matrix(rnorm(0, 1), n, m)
-  z2<-matrix(runif(-sqrt(3), sqrt(3)), n, m)
+  z1<-matrix(rnorm(0, 1), n, p)
+  z2<-matrix(runif(-sqrt(3), sqrt(3)), n, p)
   
   # Calculate X
   X<-sqrt(Sigma)%*%z
