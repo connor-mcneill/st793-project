@@ -17,32 +17,46 @@ require(parallel)
 # Generate negative binomial data.
 # PARAMS:
 # n: Number of observations we want
-# p: Number of coefficients we want (p>n)
-# rho: A number between 0 and 1 that indicates sparsity (proportion of non-zero coeffs)
+# m: Number of coefficients. p=Bm, and this model only runs when p>n.
+# B: Number of "blocks" that will form the block-diagonal Sigma matrix
+# RETURN:
+# List of 3 items: Sigma, D, and O
 
-generate.data.negbin<-function(n, p, rho, beta){
+setting<-function(n, m, B, beta){
+  p<-B*m
   
   # Calculate Sigma matrix
   s<-floor(n^0.8)
   w<-(1:p-s)^{-4}
   W<-sum(w[(s+1):length(w)])
   diag.vec<-rep(1, p) # Start as a vector, easier to use logic with
-  diag.vec[1:s]<-((n-s)*w/W)[1:s]
+  diag.vec[(s+1):p]<-((n-s)*w/W)[(s+1):p]
   D<-diag(diag.vec, nrow=p)
+  if(B==1) { 
+      save=rnorm(p^2,0,1)
+      orignal=matrix(save,p,p)
+  } else {
+      p_sub=p/B
+      orignal=matrix(0,p,p)
+      for(i in 1:B){
+        orignal[((i-1)*p_sub+1):(i*p_sub), ((i-1)*p_sub+1):(i*p_sub)]=matrix(rnorm(p_sub^2,0,1),p_sub,p_sub)
+      }
+  }
+  symtric=orignal+t(orignal)           
+  O=as.matrix(eigen(symtric)$vectors)
   
-  Sigma<-O%*%D%*%t(O)
-  
-  # Generate z
-  z1<-matrix(rnorm(0, 1), n, p)
-  z2<-matrix(runif(-sqrt(3), sqrt(3)), n, p)
-  
-  # Calculate X
-  X<-sqrt(Sigma)%*%z
+  Gamma<-O%*%D%*%t(O)
+  return(list(Sigma=Gamma%*%t(Gamma), D=D, O=O))
 }
+```
+
+```{r}
+ret.lst<-setting(10, 11, B=3, beta=2)
+ret.lst$Sigma
 ```
 
 ## Running Code
 
 ```{r}
-
+View(ret.lst$O)
 ```
