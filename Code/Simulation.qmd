@@ -1,0 +1,49 @@
+---
+title: "Simulation"
+format: html
+editor: visual
+---
+
+# Load Packages
+
+```{r, message=F, info=F}
+require(glmnet)
+require(parallel)
+```
+
+# Generate Data
+
+```{r}
+# Generate negative binomial data.
+# PARAMS:
+# n: Number of observations we want
+# m: Number of coefficients we want
+# rho: A number between 0 and 1 that indicates sparsity (proportion of non-zero coeffs)
+
+generate.data.negbin<-function(n, m, rho, beta){
+  
+  # Calculate Sigma matrix
+  s<-floor(n^0.8)
+  p<-length(beta)
+  w<-(1:p-s)^{-4}
+  W<-sum(w[(s+1):length(w)], na.rm=T)
+  diag.vec<-rep(1, p) # Start as a vector, easier to use logic with
+  diag.vec[1:s]<-((n-s)*w/W)[1:s]
+  D<-diag(diag.vec, nrow=p)
+  
+  Sigma<-O%*%D%*%t(O)
+  
+  # Generate z
+  z1<-matrix(rnorm(0, 1), n, m)
+  z2<-matrix(runif(-sqrt(3), sqrt(3)), n, m)
+  
+  # Calculate X
+  X<-sqrt(Sigma)%*%z
+}
+```
+
+## Running Code
+
+```{r}
+
+```
