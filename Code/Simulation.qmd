@@ -23,29 +23,45 @@ require(parallel)
 # List of 3 items: Sigma, D, and O
 
 setting<-function(n, m, B, beta){
-  p<-B*m
   
-  # Calculate Sigma matrix
+  p<-B*m
+  # Compute D: diagonal matrix in the decomposition of Sigma
   s<-floor(n^0.8)
-  w<-(1:p-s)^{-4}
-  W<-sum(w[(s+1):length(w)])
-  diag.vec<-rep(1, p) # Start as a vector, easier to use logic with
+  ## define weights as described in paper
+  w = numeric(p)
+  w[(s+1):p] = (1:(p-s))^-4
+  W<-sum(w)
+  ## Start as a vector, easier to use logic with
+  ## then compute D from the weights and s
+  ## finally take the sqrt as we are working with
+  ## Gamma = O D^{1/2} O^T 
+  diag.vec<-rep(1, p) 
   diag.vec[(s+1):p]<-((n-s)*w/W)[(s+1):p]
-  D<-diag(diag.vec, nrow=p)
+  D.sqrt <-diag(sqrt(diag.vec), nrow=p)
+  
+  # Compute O matrix
+  ## If B = 1, then we do not have a blockwise matrix
+  ## so generate p x p matrix from standard normal
+  ## then make it orthogonal
   if(B==1) { 
-      save=rnorm(p^2,0,1)
-      orignal=matrix(save,p,p)
+      temp = matrix(rnorm(p^2,0,1),p,p)
+      temp.sym = temp + t(temp)
+      O = as.matrix(eigen(temp.sym, TRUE)$vectors)
+  ## otherwise, generate a block-wise diagonal matrix
+  ## with each block being mxm from standard normal
+  ## and orthogonal
   } else {
-      p_sub=p/B
-      orignal=matrix(0,p,p)
+      O = matrix(0,p,p)
       for(i in 1:B){
-        orignal[((i-1)*p_sub+1):(i*p_sub), ((i-1)*p_sub+1):(i*p_sub)]=matrix(rnorm(p_sub^2,0,1),p_sub,p_sub)
+        temp = matrix(rnorm(m^2,0,1),m,m)
+        temp.sym = temp + t(temp)
+        O.temp = as.matrix(eigen(temp.sym, TRUE)$vectors)
+        O[((i-1)*m+1):(i*m), ((i-1)*m+1):(i*m)] = O.temp
       }
   }
-  symtric=orignal+t(orignal)           
-  O=as.matrix(eigen(symtric)$vectors)
   
-  Gamma<-O%*%D%*%t(O)
+  # Generate Gamma which is Gamma = O D^{1/2} O^T = Sigma^{1/2}
+  Gamma<-O%*%D.sqrt%*%t(O)
   return(list(Sigma=Gamma%*%t(Gamma), D=D, O=O))
 }
 ```
