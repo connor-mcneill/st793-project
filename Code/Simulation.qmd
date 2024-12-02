@@ -7,12 +7,12 @@ editor: visual
 # Load Packages
 
 ```{r, message=F, info=F}
-require(glmnet)
-require(parallel)
 require(MASS)
 ```
 
-# Generate Data
+# Create Necessary Functions
+
+Compute covariance matrix and coefficient vectors for data generation
 
 ```{r}
 # Compute covariance matrix and coefficient vectors for data generation
@@ -25,11 +25,11 @@ require(MASS)
 # RETURN:
 # List of 3 items: Gamma: sqrt of covariance matrix
 #                  beta_1, beta_2: coef vectors for the two settings
-setting <- function(n, m, B, n_sparse, b2){
-  
+setting <- function(n, m, B, n_sparse, b2, seed){
+  set.seed(seed)
   p<-B*m 
   # Compute D: diagonal matrix in the decomposition of Sigma
-  s<-floor(n^0.8)
+  s<-ceiling(n^0.8)
   ## define weights as described in paper
   w = numeric(p)
   w[(s+1):p] = (1:(p-s))^-4
@@ -52,17 +52,15 @@ setting <- function(n, m, B, n_sparse, b2){
       O = as.matrix(eigen(temp.sym, TRUE)$vectors)
   ## otherwise, generate a block-wise diagonal matrix
   ## with each block being mxm from standard normal
-  ## and orthogonal
-  ## TODO: explore whether O should actual be blocks
-  ## or if it should be result from eigen overall
+  ## then make it orthogonal
   } else {
-      O = matrix(0,p,p)
+      temp_full = matrix(0,p,p)
       for(i in 1:B){
-        temp = matrix(rnorm(m^2,0,1),m,m)
-        temp.sym = temp + t(temp)
-        O.temp = as.matrix(eigen(temp.sym, TRUE)$vectors)
-        O[((i-1)*m+1):(i*m), ((i-1)*m+1):(i*m)] = O.temp
+        temp_sub = matrix(rnorm(m^2,0,1),m,m)
+        temp_full[((i-1)*m+1):(i*m), ((i-1)*m+1):(i*m)] = temp_sub
       }
+      temp.sym = temp_full + t(temp_full)
+      O = as.matrix(eigen(temp.sym, TRUE)$vectors)
   }
   
   # Generate Gamma which is Gamma = O D^{1/2} O^T = Sigma^{1/2}
@@ -92,15 +90,17 @@ setting <- function(n, m, B, n_sparse, b2){
 }
 ```
 
+generate data from Poisson based off of Gamma and beta from above
+
 ```{r}
-# Generate data following the Negative Binomial model
+# Generate data following the Poisson model
 ## INPUTS: n = number of observations
 ##         m = such that p = Bm
 ##         p = number of parameters
 ##         Gamma = sqrt of covariate matrix Sigma^{1/2} = O D^{1/2} O^T
 ##         beta = coefficients of the model
 ##         data_gen = data generation method (either normal or uniform)
-data.nb = function(n, m, p, Gamma, beta, data_gen = 'normal') {
+data.poisson = function(n, m, p, Gamma, beta, data_gen = 'normal') {
   # Set up matrix for data generation
   Z = NULL
   # Get data generation method string in lower case
@@ -120,24 +120,191 @@ data.nb = function(n, m, p, Gamma, beta, data_gen = 'normal') {
   }
   # Generate X as Sigma^0.5 * Z
   X = Z %*% Gamma
-  # Generate Y from negative binomial using mean parameterization
-  # TODO: Figure out what to plug in for k...
+  # Generate Y from Poisson(mu)
   mu = as.vector(exp(X %*% beta))
-  Y = rnbinom(n, 1, mu=mu)
+  Y = rpois(n, mu)
   
   # Return X and Y
   return(list(X=X, Y=Y))
 }
 ```
 
-## Running Code
+## Hypothesis Testing Functions
 
 ```{r}
-n = 10
-m = 20
-B = 1
-p = B*m
+## GC test:
+##  X:  n x p matrix of covariates.
+##  Y:  n dimensional vector.
+##  g.assume, g.assume.deri:  model assumption for mean and its first derivative.
+##  V.assume:  model assumption for variance.
+##  please refer to Guo and Chen (2016) for details.
+CSX.test<-function(X,Y, g.assume, g.assume.deri, V.assume){
+  n = nrow(X)
+  p = ncol(X)
+  mu.0 = rep(g.assume(0), n)  
+  var.ratio=g.assume.deri(0)/ V.assume(0)
+  Phi.0 = rep(var.ratio, n)            
+  Un.tempt = 0
+  tr.Var.tempt = 0
+  for (i in 1:(n-1)){
+    for (j in (i+1):n){
+      tempt.value = NULL
+      tempt.value = (Y[i]- mu.0[i]) * (Y[j]- mu.0[j]) * Phi.0[j] * Phi.0[i] * crossprod(X[i,],X[j,])
+      Un.tempt = Un.tempt + tempt.value
+      tr.Var.tempt = tr.Var.tempt + tempt.value^2
+    }
+  }
+  Un = NULL
+  Un = (1/n) * 2 * Un.tempt
+  tr.Var = NULL
+  tr.Var = (1/(n*(n-1))) * 2 * tr.Var.tempt
+  CSX.test = Un/sqrt(2*tr.Var) 
+  return(CSX.test)
+}
 
-set = setting(n, m, B, 4, 0.2)
-data = data.nb(n, m, p, set$Gamma, set$beta_1, 'normal')
+score_fn = function(Y, X, beta) {
+  score = matrix(numeric(ncol(X)), nrow=1, ncol=ncol(X))
+  for (i in 1:length(Y)) {
+    score = score + as.vector((Y[i] - exp(X[i,]%*%beta)))*X[i,]
+  }
+  return(score)
+}
+
+FI_fn = function(Y, X, beta) {
+  n = nrow(X); p = ncol(X)
+  FI = matrix(numeric(p^2), nrow=p, ncol=p)
+  for (i in 1:n) {
+    FI = FI + as.vector((Y[i] - exp(X[i,]%*%beta)))*X[i,]%*%t(X[i,])
+  }
+  return((1/n)*FI)
+}
+
+## RP test (code modified from supplemental material, comments are our own)
+## Additional tests added for LRT, Score, and Wald based on RP data
+##  X:  n x p matrix of covariates.
+##  Y:  n dimensional vector.
+##  rho: projection ratio.
+##  D: random projection times.
+RP.tests<-function(X,Y,rho,D=10){
+  # Get number of rows n, columns p, and our projection dim k
+  n = nrow(X)
+  p = ncol(X)
+  k = ceiling(rho*n)
+  # Obtain I - P_1
+  I.P1 = diag(n) - (1/n)*matrix(1,n,n)
+  # Obtain P_k for each random projection, where P_k is a
+  # random projection matrix with random entries, drawn
+  # independently of the data. Perform D times and take 
+  # mean of each time.
+  Pk.array = array(rnorm((p*k*D),0,1),dim=c(p,k,D))
+  Pk=(1/sqrt(p))*as.matrix(apply(Pk.array,c(1,2),mean))
+  # Obtain the U matrix, (I - P1)*X*Pk
+  Uk = I.P1 %*% X %*% Pk
+  # Obtain the H matrix, the Hat matrix
+  Hk = Uk %*% solve(t(Uk) %*% Uk) %*% t(Uk)
+  # Compute the test statistic
+  T.multi = ((t(Y)%*%Hk%*%Y)/k)/((t(Y)%*%( I.P1-Hk)%*%Y)/(n-k-1))
+  # Return the standardized test statistic as given in 
+  # Section 4.1
+  deno = sqrt(2/(n*rho*(1-rho)))
+  multi = as.numeric((T.multi-1)/deno)
+  
+  # Now utilize U_k as X to do random-project classical tests
+  ## estimate the betas via MLE
+  fit = glm(Y ~ Uk + 0, family = poisson(link = 'log'))
+  beta_hat = as.vector(fit$coefficients)
+  ## Wald = (beta_hat)^T {n I(beta_hat)} beta_hat
+  W = diag(as.vector(exp(Uk %*% beta_hat)))
+  obs_FI = (1/n)* t(Uk) %*% W %*% Uk
+  Wald.stat = as.numeric(t(beta_hat) %*% (n * obs_FI) %*% beta_hat)
+  ## Score = Score(beta_0)^T {n I(beta_0)}^{-1} Score(beta_0)
+  score = score_fn(Y, Uk, rep(0,k))
+  null_FI = (1/n)* t(Uk) %*% Uk
+  Score.stat = as.numeric(score %*% solve(n * null_FI) %*% t(score))
+  ## LRT is the deviance test
+  LRT.stat = fit$null.deviance - fit$deviance
+  
+  # Return the four test statistics
+  return(c(RP = multi,
+           LRT = LRT.stat,
+           Wald = Wald.stat,
+           Score = Score.stat))
+}
+```
+
+## Simulation Function
+
+```{r}
+simulation = function(n, p, m, beta, Gamma, data.gen, rho, index,
+                      #g.assume = NA, g.assume.deri = NA, V.assume = NA,
+                      #RP.Flag = TRUE, Classical.Flag = TRUE, 
+                      #CSX.Flag = FALSE,
+                      sign = 0.95, L = 1000) {
+  # obtain projection dimension k
+  k = ceiling(rho * n)
+  # initialize the storage of estimators
+  estimator_storage = matrix(nrow = L, ncol = 4)
+  # set up progress bar
+  pb = txtProgressBar(min = 0, max = L, style=3)
+  # Perform simulation
+  for (i in 1:L) {
+    # Set the seed
+    set.seed(i)
+    # Generate the data set from the given distribution
+    data = data.gen(n, m, p, Gamma, beta)
+    # Get the X and Y from the data
+    X = data$X; Y = data$Y
+    # Compute the test statistics and record them
+    test_stats = RP.tests(X, Y, rho)
+    estimator_storage[i,] = test_stats
+    ## Update progress bar
+    setTxtProgressBar(pb, i)
+  }
+  # Close progress bar
+  close(pb)
+  # Compute rejection rate of each estimator
+  clas_rej_rate = apply(estimator_storage[,2:4], 2, 
+        function(x) {mean(ifelse(x > qchisq(sign,k), T, F))})
+  rp_rej_rate = mean(ifelse(estimator_storage[,1] > qnorm(sign), T, F))
+  
+  # Return rejection rates
+  return(c(rp_rej_rate, clas_rej_rate))
+}
+```
+
+# Running Code
+
+```{r}
+# Initialize n, m, and B
+n = 400
+m = 10
+B = 100
+p = B*m
+# SETTING 1: null hypothesis is true
+set_null = setting(n, m, B, n_sparse = 10, b2=0, seed=793)
+results_null = simulation(n, p, m, beta = set_null$beta_1, set_null$Gamma,
+                     data.gen = data.poisson, rho = 0.4,
+                     index = 0)
+# SETTING 2: b^2 = 0.1
+set_0.1 = setting(n, m, B, n_sparse = 10, b2 = 0.1, seed=793)
+results_d1_0.1 = simulation(n, p, m, beta = set_0.1$beta_1,
+                            set_0.1$Gamma, data.gen = data.poisson,
+                            rho = 0.4, index=0)
+results_d2_0.1 = simulation(n, p, m, beta = set_0.1$beta_2,
+                            set_0.1$Gamma, data.gen = data.poisson,
+                            rho = 0.4, index=0)
+# SETTING 3: b^2 = 0.2
+set_0.2 = setting(n, m, B, n_sparse = 10, b2 = 0.2, seed=793)
+results_d1_0.2 = simulation(n, p, m, beta = set_0.2$beta_1,
+                            set_0.2$Gamma, data.gen = data.poisson,
+                            rho = 0.4, index=0)
+results_d2_0.2 = simulation(n, p, m, beta = set_0.2$beta_2,
+                            set_0.2$Gamma, data.gen = data.poisson,
+                            rho = 0.4, index=0)
+# Display results
+results.table = rbind(results_null, results_d1_0.1, results_d2_0.1,
+                      results_d1_0.2, results_d2_0.2)
+print(results.table, digits=3)
+# Save image of results in R
+save.image(file = 'simresults.RData')
 ```
