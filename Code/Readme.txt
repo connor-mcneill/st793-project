@@ -5,5 +5,5 @@ utilities_generate.R:
   data.poission(): Generate data following the Poisson model
 utilities_estimate.R:
   score_fn(): Calculate Score vector
-  RP.test(): Compute RP test, T_{RP}
+  RP.tests(): Compute classical test statistics
   simulation(): Performs simulation for particular iteration
